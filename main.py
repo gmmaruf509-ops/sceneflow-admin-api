@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 import random
 from typing import Dict
 
-app = FastAPI(title="SceneFlow Admin API - Fast Switch")
+app = FastAPI(title="SceneFlow Admin API - Ultra Fast Switch")
 
 # Environment variables
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN")
@@ -18,9 +18,9 @@ if not ADMIN_TOKEN:
 if not GEMINI_KEYS:
     raise ValueError("GEMINI_API_KEYS environment variable is required! (comma separated keys)")
 
-# Track cooldown per key (কমানো হয়েছে যাতে ফাস্ট সুইচ হয়)
+# Cooldown খুব কম (১০ সেকেন্ড) — আপনার চাহিদা অনুযায়ী
 key_cooldown: Dict[str, datetime] = {key: datetime.utcnow() - timedelta(days=1) for key in GEMINI_KEYS}
-COOLDOWN_BASE = 5  # ১ মিনিট (আপনার চাহিদা অনুযায়ী কমানো, চাইলে 30 করুন)
+COOLDOWN_BASE = 5  # ১০ সেকেন্ড — চাইলে 5 বা 1 করুন (রিস্ক বাড়বে)
 
 current_key_index = 0
 
@@ -29,7 +29,7 @@ def get_next_key() -> str:
     n = len(GEMINI_KEYS)
     attempts = 0
 
-    while attempts < n * 3:  # আরও aggressive খোঁজা (৩ গুণ চেষ্টা)
+    while attempts < n * 5:  # আরও বেশি চেষ্টা — ফাস্ট সুইচের জন্য
         key = GEMINI_KEYS[current_key_index % n]
         if datetime.utcnow() >= key_cooldown[key]:
             current_key_index = (current_key_index + 1) % n
@@ -37,10 +37,10 @@ def get_next_key() -> str:
         current_key_index = (current_key_index + 1) % n
         attempts += 1
 
-    # সব exhausted → ছোট wait + auto-retry hint
+    # সব exhausted → খুব ছোট wait + auto-retry hint
     raise HTTPException(
         429,
-        "All keys temporarily exhausted. Automatically retrying soon... (wait 1-2 min max)"
+        "All keys temporarily exhausted. Automatically retrying in seconds..."
     )
 
 class GenerateRequest(BaseModel):
@@ -57,7 +57,8 @@ async def generate(
     if not authorization or authorization != f"Bearer {ADMIN_TOKEN}":
         raise HTTPException(status_code=401, detail="Invalid or missing Authorization token")
 
-    for attempt in range(12):  # ১২ বার চেষ্টা (ফাস্ট সুইচের জন্য বাড়ানো)
+    max_attempts = 20  # অনেক বেশি চেষ্টা — যাতে পরের key পায়
+    for attempt in range(max_attempts):
         api_key = get_next_key()
 
         try:
@@ -70,7 +71,7 @@ async def generate(
 
             response = model.generate_content(request.prompt, generation_config=gen_config)
 
-            # সফল হলে cooldown reset
+            # সফল হলে reset
             key_cooldown[api_key] = datetime.utcnow() - timedelta(days=1)
 
             return {
@@ -78,24 +79,30 @@ async def generate(
                 "result": response.text,
                 "model_used": request.model,
                 "key_hint": api_key[:8] + "...",
-                "attempt": attempt + 1
+                "attempt": attempt + 1,
+                "note": "Switched automatically if needed"
             }
 
         except Exception as e:
             str_e = str(e).lower()
             if "429" in str_e or "quota" in str_e or "exhausted" in str_e or "rate limit" in str_e:
-                cooldown_time = COOLDOWN_BASE + random.randint(0, 30)  # ৬০-৯০ সেকেন্ড
+                cooldown_time = COOLDOWN_BASE + random.randint(0, 10)  # ১০-২০ সেকেন্ড
                 key_cooldown[api_key] = datetime.utcnow() + timedelta(seconds=cooldown_time)
-                print(f"Key {api_key[:8]}... exhausted → cooldown {cooldown_time} sec, auto-switching...")
-                # চেষ্টা চালিয়ে যান (অটো সুইচ)
+                print(f"Key {api_key[:8]}... exhausted → cooldown {cooldown_time}s, switching immediately...")
+                # অটো চালিয়ে যান
             else:
-                raise HTTPException(status_code=500, detail=f"Generation error: {str(e)}")
+                raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
 
     raise HTTPException(
         429,
-        "Quota exhausted on all keys after max retries. Wait 1-2 min and try again (auto-retrying enabled)."
+        "Quota exhausted on all keys after max fast retries. Wait 30-60 seconds and try again (auto-retrying)."
     )
 
 @app.get("/health")
 async def health():
-    return {"status": "healthy", "keys_loaded": len(GEMINI_KEYS), "cooldown_active": any(datetime.utcnow() < t for t in key_cooldown.values())}
+    active_cooldowns = sum(1 for t in key_cooldown.values() if datetime.utcnow() < t)
+    return {
+        "status": "healthy",
+        "keys_loaded": len(GEMINI_KEYS),
+        "keys_in_cooldown": active_cooldowns
+    }
