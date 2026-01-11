@@ -20,7 +20,7 @@ if not GEMINI_KEYS:
 
 # Cooldown খুব কম (১০ সেকেন্ড) — আপনার চাহিদা অনুযায়ী
 key_cooldown: Dict[str, datetime] = {key: datetime.utcnow() - timedelta(days=1) for key in GEMINI_KEYS}
-COOLDOWN_BASE = 5  # ১০ সেকেন্ড — চাইলে 5 বা 1 করুন (রিস্ক বাড়বে)
+COOLDOWN_BASE = 10  # ১০ সেকেন্ড — চাইলে 5 বা 1 করুন (রিস্ক বাড়বে)
 
 current_key_index = 0
 
